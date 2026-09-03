@@ -2,10 +2,24 @@ import { isBlock, stepNumbers } from '@/core/guides/blocks';
 import type { ElementMeta, Guide, Step } from '@/core/guides/types';
 
 /**
- * Escape a string value for use in a Playwright template literal string.
+ * Escape a string value for use inside a single-quoted Playwright string.
+ * Handles backslashes, backticks, template interpolation, single quotes,
+ * and newlines.
  */
 function esc(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\${/g, '\\${');
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\${/g, '\\${')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n');
+}
+
+/**
+ * Escape a string for use inside a double-quoted CSS attribute selector value.
+ */
+function escAttr(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
 }
 
 /**
@@ -70,14 +84,14 @@ function codegenLocator(meta: ElementMeta): string {
   // If the selector is too generic, try to build a better one from attributes
   if (css === 'body' || css === 'div' || css === 'span' || css === tag) {
     const parts: string[] = [tag];
-    if (meta.name) parts.push(`[name="${esc(meta.name)}"]`);
-    if (meta.inputType) parts.push(`[type="${esc(meta.inputType)}"]`);
+    if (meta.name) parts.push(`[name="${escAttr(meta.name)}"]`);
+    if (meta.inputType) parts.push(`[type="${escAttr(meta.inputType)}"]`);
     if (meta.href) {
       try {
         const u = new URL(meta.href);
-        parts.push(`[href="${esc(u.pathname + u.search)}"]`);
+        parts.push(`[href="${escAttr(u.pathname + u.search)}"]`);
       } catch {
-        parts.push(`[href="${esc(meta.href)}"]`);
+        parts.push(`[href="${escAttr(meta.href)}"]`);
       }
     }
     return `page.locator('${parts.join('')}')`;
@@ -88,19 +102,30 @@ function codegenLocator(meta: ElementMeta): string {
 
 /**
  * Generate the Playwright action line for a step.
+ * Returns lines of code, or null if the step has no element metadata
+ * (the caller should emit a comment instead).
  */
-function codegenAction(step: Step): string {
-  const meta = step.elementMeta!;
+function codegenAction(step: Step): string | null {
+  if (!step.elementMeta) {
+    return null;
+  }
+
+  const meta = step.elementMeta;
   const sel = codegenLocator(meta);
 
   switch (step.action) {
     case 'click':
-    case 'auxclick': {
       if (meta.role === 'link' || meta.href) return `  await ${sel}.click();`;
       if (meta.role === 'checkbox' || meta.inputType === 'checkbox') return `  await ${sel}.check();`;
       if (meta.role === 'radio' || meta.inputType === 'radio') return `  await ${sel}.check();`;
       return `  await ${sel}.click();`;
-    }
+
+    case 'auxclick':
+      // Middle-click — use Playwright's button option to match the browser behavior
+      if (meta.role === 'link' || meta.href) return `  await ${sel}.click({ button: 'middle' });`;
+      if (meta.role === 'checkbox' || meta.inputType === 'checkbox') return `  await ${sel}.check();`;
+      if (meta.role === 'radio' || meta.inputType === 'radio') return `  await ${sel}.check();`;
+      return `  await ${sel}.click({ button: 'middle' });`;
 
     case 'input': {
       if (meta.role === 'checkbox' || meta.inputType === 'checkbox') return `  await ${sel}.check();`;
@@ -119,7 +144,9 @@ function codegenAction(step: Step): string {
       return `  await ${sel}.click();\n  await page.keyboard.press('ControlOrMeta+X');`;
 
     case 'drag':
-      return `  await ${sel}.dragTo(${sel});`;
+      // Mimik captures the source element but not the drop target, so a
+      // self-dragTo is misleading. Emit a placeholder instead.
+      return `  // TODO: Drag from ${sel} — add a drop target to complete this action`;
 
     default:
       if (step.action.startsWith('keydown:')) {
@@ -165,7 +192,9 @@ function codegenAction(step: Step): string {
 export function exportGuideAsPlaywright(guide: Guide, steps: Step[]): string {
   const numbers = stepNumbers(steps);
   const firstStep = steps.find((s) => s.url && !isBlock(s));
-  const baseUrl = firstStep?.url ? new URL(firstStep.url).origin : '';
+  // Use the full URL of the first step, not just the origin, so the
+  // exported test starts on the correct page (path + query included).
+  const firstUrl = firstStep?.url ?? '';
 
   const lines: string[] = [
     "import { test, expect } from '@playwright/test';",
@@ -173,9 +202,9 @@ export function exportGuideAsPlaywright(guide: Guide, steps: Step[]): string {
     `test('${esc(guide.title || 'Untitled Guide')}', async ({ page }) => {`,
   ];
 
-  // Start with the first navigable URL
-  if (baseUrl) {
-    lines.push(`  await page.goto('${esc(baseUrl)}');`);
+  // Start with the full URL of the first recorded step
+  if (firstUrl) {
+    lines.push(`  await page.goto('${esc(firstUrl)}');`);
   }
 
   for (const step of steps) {
@@ -193,16 +222,22 @@ export function exportGuideAsPlaywright(guide: Guide, steps: Step[]): string {
     const num = numbers.get(step.id) ?? 0;
     const comment = esc(step.description || `Step ${num}`);
     const url = step.url;
+    const origin = firstUrl ? new URL(firstUrl).origin : '';
 
     // Navigate when the URL origin changes (codegen mirrors navigation)
     if (url) {
       try {
         const stepUrl = new URL(url);
-        if (stepUrl.origin !== baseUrl) {
+        if (stepUrl.origin !== origin) {
           lines.push(`  await page.goto('${esc(url)}');`);
           lines.push('');
           lines.push(`  // ${comment}`);
-          lines.push(codegenAction(step));
+          const action = codegenAction(step);
+          if (action) {
+            lines.push(action);
+          } else {
+            lines.push(`  // No element metadata — ${comment}`);
+          }
           continue;
         }
       } catch {
@@ -212,7 +247,12 @@ export function exportGuideAsPlaywright(guide: Guide, steps: Step[]): string {
 
     lines.push('');
     lines.push(`  // ${comment}`);
-    lines.push(codegenAction(step));
+    const action = codegenAction(step);
+    if (action) {
+      lines.push(action);
+    } else {
+      lines.push(`  // No element metadata — ${comment}`);
+    }
   }
 
   lines.push('});');
