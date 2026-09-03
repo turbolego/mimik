@@ -398,6 +398,7 @@ exportMenu:
   pdf: PDF
   video: Vídeo
   cancelProgress: "Cancelar · $1 %"
+  playwright: "Test de Playwright"
 
 onboarding:
   welcomeBadge: Bienvenido

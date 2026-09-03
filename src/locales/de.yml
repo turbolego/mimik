@@ -329,6 +329,7 @@ exportMenu:
   pdf: PDF
   video: Video
   cancelProgress: "Abbrechen · $1 %"
+  playwright: "Playwright-Test"
 
 onboarding:
   welcomeBadge: Willkommen
