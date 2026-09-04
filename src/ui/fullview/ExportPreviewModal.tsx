@@ -1,4 +1,4 @@
-import { FileCode, FileDown, FileText, Loader2, Video } from 'lucide-react';
+import { FileCode, FileDown, FileText, Loader2, TestTube, Video } from 'lucide-react';
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { i18n } from '#imports';
 import { downloadBlob, downloadText, safeFilename } from '@/core/export/download';
@@ -32,7 +32,7 @@ interface ExportPreviewModalProps {
   screenshots: Map<string, Screenshot>;
 }
 
-type ExportFormat = 'docx' | 'html' | 'markdown' | 'pdf' | 'video';
+type ExportFormat = 'docx' | 'html' | 'markdown' | 'pdf' | 'playwright' | 'video';
 type PreviewMode = 'document' | 'video';
 
 export default function ExportPreviewModal({ open, onOpenChange, guide, steps, screenshots }: ExportPreviewModalProps) {
@@ -142,6 +142,10 @@ export default function ExportPreviewModal({ open, onOpenChange, guide, steps, s
       } else if (format === 'docx') {
         const { exportGuideAsDOCX } = await import('@/core/export/docx-export');
         downloadBlob(await exportGuideAsDOCX(guide, steps, screenshots, options), safeFilename(guide.title, 'docx'));
+      } else if (format === 'playwright') {
+        const { exportGuideAsPlaywright } = await import('@/core/export/playwright-export');
+        const pw = exportGuideAsPlaywright(guide, steps);
+        downloadText(pw, safeFilename(guide.title, 'spec.ts'), 'text/typescript');
       } else if (format === 'video') {
         const controller = new AbortController();
         downloadAbort.current = controller;
@@ -185,6 +189,7 @@ export default function ExportPreviewModal({ open, onOpenChange, guide, steps, s
     { key: 'pdf', icon: FileDown, label: i18n.t('exportMenu.pdf') },
     { key: 'docx', icon: FileText, label: i18n.t('exportMenu.docx') },
     { key: 'html', icon: FileCode, label: i18n.t('exportMenu.html') },
+    { key: 'playwright', icon: TestTube, label: i18n.t('exportMenu.playwright') },
     { key: 'markdown', icon: FileText, label: i18n.t('exportMenu.markdown') },
     ...(videoSupported ? [{ key: 'video' as const, icon: Video, label: i18n.t('exportMenu.video') }] : []),
   ];

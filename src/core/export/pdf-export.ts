@@ -3,6 +3,7 @@ import { i18n } from '#imports';
 import { fitLogo, loadBranding } from '@/core/export/branding';
 import { type ExportOptions, IMAGE_SCALE_FACTORS, loadExportOptions } from '@/core/export/options';
 import { CONTENT_BOTTOM_MM, HEAD_BAND_MM, PAGE_MARGIN_MM, STEP_TOP_MM } from '@/core/export/page';
+import { measurer, needsRaster, rasterize, wrap } from '@/core/export/pdf-text';
 import {
   blobToDataUrl,
   clampLines,
@@ -75,6 +76,46 @@ const MUTED: [number, number, number] = [107, 114, 128];
 const HAIR: [number, number, number] = [229, 231, 235];
 const PAPER: [number, number, number] = [255, 255, 255];
 
+type Rgb = readonly [number, number, number];
+
+function splitFor(doc: jsPDF, text: string, maxWidth: number, size: number, bold: boolean): string[] {
+  if (!needsRaster(text)) return doc.splitTextToSize(text, maxWidth);
+  const measure = measurer(size, bold);
+  return measure ? wrap(text, maxWidth, measure) : doc.splitTextToSize(text, maxWidth);
+}
+
+function widthOf(doc: jsPDF, text: string, size: number, bold: boolean): number {
+  if (!needsRaster(text)) return doc.getTextWidth(text);
+  return measurer(size, bold)?.(text) ?? doc.getTextWidth(text);
+}
+
+function writeLines(
+  doc: jsPDF,
+  lines: string[],
+  x: number,
+  baseline: number,
+  size: number,
+  bold: boolean,
+  color: Rgb,
+  lineHeight: number,
+): void {
+  doc.setFontSize(size);
+  doc.setFont('helvetica', bold ? 'bold' : 'normal');
+  doc.setTextColor(color[0], color[1], color[2]);
+  const raster = lines.some(needsRaster)
+    ? rasterize(lines, size, bold, lineHeight, `rgb(${color[0]},${color[1]},${color[2]})`)
+    : null;
+  if (raster) {
+    try {
+      doc.addImage(raster.dataUrl, 'PNG', x, baseline - raster.ascent, raster.width, raster.height);
+      return;
+    } catch (err) {
+      logger.warn('PDF: failed to draw rasterised text, falling back to the base font', err);
+    }
+  }
+  doc.text(lines, x, baseline);
+}
+
 export async function exportGuideAsPDF(
   guide: Guide,
   steps: Step[],
@@ -101,8 +142,8 @@ export async function exportGuideAsPDF(
 
     doc.setFontSize(30);
     doc.setTextColor(...INK);
-    const titleLines = clampLines(doc.splitTextToSize(guide.title, CONTENT_W * 0.82), MAX_TITLE_LINES);
-    doc.text(titleLines, MARGIN, MARGIN + 26);
+    const titleLines = clampLines(splitFor(doc, guide.title, CONTENT_W * 0.82, 30, true), MAX_TITLE_LINES);
+    writeLines(doc, titleLines, MARGIN, MARGIN + 26, 30, true, INK, TITLE_LINE_H);
 
     const titleBottom = MARGIN + 26 + (titleLines.length - 1) * TITLE_LINE_H;
     if (brand.logo && logo) {
@@ -118,8 +159,8 @@ export async function exportGuideAsPDF(
       doc.setFontSize(11);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(...MUTED);
-      const descLines = clampLines(doc.splitTextToSize(guide.description, CONTENT_W * 0.7), MAX_DESC_LINES);
-      doc.text(descLines, MARGIN, y + 4);
+      const descLines = clampLines(splitFor(doc, guide.description, CONTENT_W * 0.7, 11, false), MAX_DESC_LINES);
+      writeLines(doc, descLines, MARGIN, y + 4, 11, false, MUTED, 5);
       y += 4 + (descLines.length - 1) * 5 + COVER_RULE_GAP;
     }
 
@@ -168,7 +209,7 @@ export async function exportGuideAsPDF(
     doc.setFontSize(8);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...INK);
-    doc.text(doc.splitTextToSize(guide.title, CONTENT_W * 0.7)[0], MARGIN, MARGIN + 3);
+    writeLines(doc, [splitFor(doc, guide.title, CONTENT_W * 0.7, 8, true)[0]], MARGIN, MARGIN + 3, 8, true, INK, 3);
     if (brand.logo && headLogo) {
       try {
         doc.addImage(
@@ -195,8 +236,8 @@ export async function exportGuideAsPDF(
     doc.setFontSize(LEAD_SIZE);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...MUTED);
-    const leadLines = clampLines(doc.splitTextToSize(guide.description, CONTENT_W * 0.8), MAX_LEAD_LINES);
-    doc.text(leadLines, MARGIN, sy + LEAD_BASELINE);
+    const leadLines = clampLines(splitFor(doc, guide.description, CONTENT_W * 0.8, LEAD_SIZE, false), MAX_LEAD_LINES);
+    writeLines(doc, leadLines, MARGIN, sy + LEAD_BASELINE, LEAD_SIZE, false, MUTED, LEAD_LINE_H);
     sy += LEAD_BASELINE + (leadLines.length - 1) * LEAD_LINE_H + LEAD_GAP;
   }
 
@@ -209,7 +250,7 @@ export async function exportGuideAsPDF(
 
     doc.setFontSize(11);
     doc.setFont('helvetica', 'bold');
-    const descLines = doc.splitTextToSize(step.description, TEXT_COL);
+    const descLines = splitFor(doc, step.description, TEXT_COL, 11, true);
 
     const screenshot = opts.screenshots ? screenshots.get(step.id) : undefined;
     let imgDataUrl: string | null = null;
@@ -244,12 +285,9 @@ export async function exportGuideAsPDF(
     doc.setLineWidth(0.3);
     doc.line(TEXT_X, sy, RIGHT, sy);
 
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...INK);
-    doc.text(descLines, TEXT_X, sy + 6);
+    writeLines(doc, descLines, TEXT_X, sy + 6, 11, true, INK, TEXT_LINE_H);
 
-    let ux = TEXT_X + doc.getTextWidth(descLines[descLines.length - 1]);
+    let ux = TEXT_X + widthOf(doc, descLines[descLines.length - 1], 11, true);
     let uy = sy + 6 + (descLines.length - 1) * 5;
 
     if (step.url && opts.stepUrls) {
@@ -304,7 +342,7 @@ export async function exportGuideAsPDF(
     doc.setLineWidth(0.3);
     doc.line(MARGIN, FOOTER_Y, RIGHT, FOOTER_Y);
     const fy = FOOTER_Y + 4;
-    if (brand.footer) doc.text(brand.footer, MARGIN, fy);
+    if (brand.footer) writeLines(doc, [brand.footer], MARGIN, fy, 8, false, MUTED, 3);
     if (attribution) doc.text(attribution, PAGE_W / 2, fy, { align: 'center' });
     doc.text(`${p} / ${totalPages}`, RIGHT, fy, { align: 'right' });
   }
@@ -316,12 +354,11 @@ function drawBlock(doc: jsPDF, step: Step, y: number, nextPage: () => number): n
   if (step.blockType === 'heading') {
     doc.setFontSize(HEADING_SIZE);
     doc.setFont('helvetica', 'bold');
-    const lines = doc.splitTextToSize(step.description, CONTENT_W);
+    const lines = splitFor(doc, step.description, CONTENT_W, HEADING_SIZE, true);
     const blockH = HEADING_BASELINE + (lines.length - 1) * HEADING_LINE_H + HEADING_RULE_GAP;
     let sy = y;
     if (sy + blockH > CONTENT_BOTTOM_MM && sy > STEP_TOP) sy = nextPage();
-    doc.setTextColor(...INK);
-    doc.text(lines, MARGIN, sy + HEADING_BASELINE);
+    writeLines(doc, lines, MARGIN, sy + HEADING_BASELINE, HEADING_SIZE, true, INK, HEADING_LINE_H);
     const ruleY = sy + blockH;
     doc.setDrawColor(...INK);
     doc.setLineWidth(0.3);
@@ -335,7 +372,7 @@ function drawBlock(doc: jsPDF, step: Step, y: number, nextPage: () => number): n
   const textX = MARGIN + CALLOUT_BAR_W + CALLOUT_PAD_X;
   doc.setFontSize(CALLOUT_SIZE);
   doc.setFont('helvetica', 'normal');
-  const lines = doc.splitTextToSize(step.description, RIGHT - CALLOUT_PAD_X - textX);
+  const lines = splitFor(doc, step.description, RIGHT - CALLOUT_PAD_X - textX, CALLOUT_SIZE, false);
   const boxH = CALLOUT_PAD_Y * 2 + lines.length * CALLOUT_LINE_H;
   let sy = y;
   if (sy + boxH > CONTENT_BOTTOM_MM && sy > STEP_TOP) sy = nextPage();
@@ -343,8 +380,7 @@ function drawBlock(doc: jsPDF, step: Step, y: number, nextPage: () => number): n
   doc.roundedRect(MARGIN, sy, CONTENT_W, boxH, CALLOUT_RADIUS, CALLOUT_RADIUS, 'F');
   doc.setFillColor(...bar);
   doc.rect(MARGIN, sy + CALLOUT_RADIUS, CALLOUT_BAR_W, boxH - CALLOUT_RADIUS * 2, 'F');
-  doc.setTextColor(...INK);
-  doc.text(lines, textX, sy + CALLOUT_PAD_Y + CALLOUT_BASELINE);
+  writeLines(doc, lines, textX, sy + CALLOUT_PAD_Y + CALLOUT_BASELINE, CALLOUT_SIZE, false, INK, CALLOUT_LINE_H);
   return sy + boxH + BLOCK_GAP;
 }
 

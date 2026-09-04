@@ -1,4 +1,4 @@
-import { Download, FileCode, FileDown, FileText, Loader2, Video } from 'lucide-react';
+import { Download, FileCode, FileDown, FileText, Loader2, TestTube, Video } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { i18n } from '#imports';
 import { downloadBlob, downloadText, safeFilename } from '@/core/export/download';
@@ -17,7 +17,7 @@ interface ExportMenuProps {
   screenshots: Map<string, Screenshot>;
 }
 
-type ExportType = 'docx' | 'html' | 'markdown' | 'pdf' | 'video';
+type ExportType = 'docx' | 'html' | 'markdown' | 'pdf' | 'playwright' | 'video';
 
 export default function ExportMenu({
   guideId,
@@ -68,6 +68,10 @@ export default function ExportMenu({
       } else if (type === 'markdown') {
         const md = await exportGuideAsMarkdown(guide, steps, screenshots);
         downloadText(md, safeFilename(guide.title, 'md'), 'text/markdown');
+      } else if (type === 'playwright') {
+        const { exportGuideAsPlaywright } = await import('@/core/export/playwright-export');
+        const pw = exportGuideAsPlaywright(guide, steps);
+        downloadText(pw, safeFilename(guide.title, 'spec.ts'), 'text/typescript');
       } else if (type === 'video') {
         const controller = new AbortController();
         videoAbort.current = controller;
@@ -94,6 +98,7 @@ export default function ExportMenu({
     { type: 'docx' as const, icon: FileText, label: i18n.t('exportMenu.docx') },
     { type: 'html' as const, icon: FileCode, label: i18n.t('exportMenu.html') },
     { type: 'markdown' as const, icon: FileText, label: i18n.t('exportMenu.markdown') },
+    { type: 'playwright' as const, icon: TestTube, label: i18n.t('exportMenu.playwright') },
     { type: 'pdf' as const, icon: FileDown, label: i18n.t('exportMenu.pdf') },
     ...(videoSupported ? [{ type: 'video' as const, icon: Video, label: i18n.t('exportMenu.video') }] : []),
   ];
